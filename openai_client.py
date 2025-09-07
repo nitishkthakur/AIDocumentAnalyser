@@ -19,7 +19,7 @@ You will be given your task. You will have access to all the relevant informatio
 2. Reason and execute your task.
 3. You have access to multiple tools as listed. You can only call tools which are relevant to your task. Other agents might have executed other tools which you dont have access to.
 4. Make the necessary tool calls if your tool descriptions match the task
-5. your task will be enclosed in <YOUR TASK></YOUR TASK> tags. This is your task. Only execute this task.
+5. your task will be enclosed in <task></task> tags. This is your task. Only execute this task.
 6. The work done by other agents will be enclosed in <Agent: Agent Name></Agent: Agent Name> tags. There may be multiple of these.
 7. Any information to be used as reference (from documents or internet) about the problem is enclosed in <CONTEXT></CONTEXT> tags
 8. Some general information is enclosed in <general information> tags
@@ -27,20 +27,6 @@ You will be given your task. You will have access to all the relevant informatio
 <general information>
 1. The current date is: {CURRENT_DATE}
 </general information>
-
-Following is the relevant information from other agents (if any):
-{other_agents_history}
-
-
-
-Here is the required context (if any) that you should refer to:
-<CONTEXT>
-{context}
-</CONTEXT>
-
-<YOUR TASK>
-{task}
-</YOUR TASK>
 
 
 """
@@ -170,11 +156,8 @@ class OpenAIClient:
         self.all_tool_names = ""
         self.only_this_agent_context = this_agent_context
 
-        # System instructions is the same as the generic agent instructions - fix that to remove redundancy
-        self.generic_agent_instructions = GENERIC_AGENT_INSTRUCTIONS.format(task=self.role, 
-                                                                            other_agents_history=self.history_from_other_agents,
-                                                                            context=self.only_this_agent_context,
-                                                                            CURRENT_DATE=CURRENT_DATE)
+        # System instructions without the task and context (both will go to user message instead)
+        self.generic_agent_instructions = GENERIC_AGENT_INSTRUCTIONS.format(CURRENT_DATE=CURRENT_DATE)
         self.system_instructions = self.generic_agent_instructions
 
     def _validate_reasoning(self, reasoning: dict) -> dict:
@@ -691,6 +674,7 @@ class OpenAIClient:
         stream: bool = False,
         reasoning: dict = None,
         verbosity: str = "medium",
+        context: str = "",
     ) -> dict:
         """Build the payload for OpenAI chat API."""
         # Force model to gpt-5-nano only
@@ -706,8 +690,13 @@ class OpenAIClient:
         # Add conversation history
         messages.extend(self.conversation_history)
         
-        # Add current user query
-        messages.append({"role": "user", "content": query})
+        # Add current user query with context and task
+        # Format: <context>{context}</context>\n\n<task>{role}</task>\n\n{query}
+        user_message = ""
+        if context.strip():
+            user_message += f"<context>{context}</context>\n\n"
+        user_message += f"<task>{self.role}</task>\n\n{query}"
+        messages.append({"role": "user", "content": user_message})
         
         payload = {
             "model": model,
@@ -766,6 +755,7 @@ class OpenAIClient:
         model_name: t.Optional[str] = None,
         reasoning: t.Optional[dict] = None,
         verbosity: t.Optional[str] = None,
+        context: str = "",
     ) -> dict:
         """Send a query to OpenAI and return the response.
         
@@ -784,6 +774,7 @@ class OpenAIClient:
             verbosity: Controls response verbosity for applicable models.
                       Allowed values: "low", "medium", "high".
                       If None, uses default from initialization.
+            context: Additional context information to include in the user message
         
         Returns:
             dict: Response containing 'text', 'raw', 'conversation_history', 'tool_calls', 'tool_results'
@@ -803,10 +794,10 @@ class OpenAIClient:
         
         # If tools are provided, we need to use chat/completions API
         if tools:
-            return self._invoke_with_completions_api(query, json_schema, tools, model, effective_reasoning, effective_verbosity)
+            return self._invoke_with_completions_api(query, json_schema, tools, model, effective_reasoning, effective_verbosity, context)
         
         # For simple queries without tools, use the newer Responses API
-        return self._invoke_with_responses_api(query, json_schema, model, effective_reasoning, effective_verbosity)
+        return self._invoke_with_responses_api(query, json_schema, model, effective_reasoning, effective_verbosity, context)
 
     def _invoke_with_responses_api(
         self,
@@ -815,6 +806,7 @@ class OpenAIClient:
         model: str = "gpt-5-nano",
         reasoning: dict = None,
         verbosity: str = "medium",
+        context: str = "",
     ) -> dict:
         """Handle queries using the newer Responses API."""
         if reasoning is None:
@@ -823,9 +815,15 @@ class OpenAIClient:
         url = f"{self.base_url}/responses"
         
         # Build payload for Responses API
+        # Format input with context and task
+        input_with_context_and_task = ""
+        if context.strip():
+            input_with_context_and_task += f"<context>{context}</context>\n\n"
+        input_with_context_and_task += f"<task>{self.role}</task>\n\n{query}"
+        
         payload = {
             "model": model,
-            "input": query,
+            "input": input_with_context_and_task,
             "max_output_tokens": 4000,  # Responses API uses max_output_tokens
             "temperature": 1,
         }
@@ -852,7 +850,7 @@ class OpenAIClient:
                 }
             else:
                 # Fallback for unsupported models - add instruction to the input
-                payload["input"] = f"{query}\n\nPlease respond with valid JSON that follows this schema: {json.dumps(schema)}"
+                payload["input"] = f"{input_with_task}\n\nPlease respond with valid JSON that follows this schema: {json.dumps(schema)}"
                 payload["text"] = {"format": {"type": "json_object"}}
         
         headers = {
@@ -1067,9 +1065,11 @@ class OpenAIClient:
         model = "gpt-5-nano"
         
         # Build payload for Responses API
+        # Prepend task to the input text
+        input_with_task = f"<task>{self.role}</task>\n\n{input_text}"
         payload = {
             "model": model,
-            "input": input_text,
+            "input": input_with_task,
             "max_output_tokens": 4000,  # Responses API uses max_output_tokens
             "temperature": 1,
         }
@@ -1088,7 +1088,7 @@ class OpenAIClient:
                 }
             else:
                 # Fallback for unsupported models - add instruction to the input
-                payload["input"] = f"{input_text}\n\nPlease respond with valid JSON that follows this schema: {json.dumps(schema)}"
+                payload["input"] = f"{input_with_task}\n\nPlease respond with valid JSON that follows this schema: {json.dumps(schema)}"
                 payload["text"] = {"format": {"type": "json_object"}}
         
         headers = {
