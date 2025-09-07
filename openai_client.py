@@ -202,16 +202,16 @@ class OpenAIClient:
             raise ValueError(f"verbosity must be one of {valid_verbosity}, got: {verbosity}")
         return verbosity
 
-    def _supports_reasoning_effort(self, model: str) -> bool:
-        """Check if the model supports reasoning_effort parameter.
+    def _supports_reasoning(self, model: str) -> bool:
+        """Check if the model supports reasoning parameter.
         
         Args:
             model: The model name to check
             
         Returns:
-            True if the model supports reasoning_effort parameter
+            True if the model supports reasoning parameter
         """
-        # O1 models and their variants support reasoning_effort
+        # O1 models and their variants support reasoning
         reasoning_models = [
             "gpt-5-mini", "gpt-5-nano", "gpt-5"
         ]
@@ -737,13 +737,15 @@ class OpenAIClient:
             payload["tools"] = tool_schemas
             payload["tool_choice"] = "auto"
         
-        # Add reasoning effort for O1 models
-        if self._supports_reasoning_effort(model):
-            payload["reasoning_effort"] = reasoning["effort"] if reasoning else "medium"
+        # Add reasoning for O1 models
+        if self._supports_reasoning(model):
+            payload["reasoning"] = reasoning if reasoning else {"effort": "medium"}
             
-        # Add verbosity for applicable models
+        # Add verbosity for applicable models in text object
         if self._supports_verbosity(model):
-            payload["verbosity"] = verbosity
+            if "text" not in payload:
+                payload["text"] = {}
+            payload["text"]["verbosity"] = verbosity
             
         return payload
 
@@ -828,20 +830,16 @@ class OpenAIClient:
             "temperature": 1,
         }
         
-        # Add reasoning effort for O1 models
-        if self._supports_reasoning_effort(model):
-            payload["reasoning_effort"] = reasoning["effort"]
-            
-        # Add verbosity for applicable models
-        if self._supports_verbosity(model):
-            payload["verbosity"] = verbosity
+        # Add reasoning for O1 models
+        if self._supports_reasoning(model):
+            payload["reasoning"] = reasoning
         
         # Add JSON schema if provided (Responses API format)
         schema = self._extract_json_schema(json_schema)
         if schema:
             if self._supports_structured_outputs(model):
                 # Use Responses API's structured format
-                payload["text"] = {
+                text_config = {
                     "format": {
                         "type": "json_schema",
                         "name": "structured_response",
@@ -850,8 +848,18 @@ class OpenAIClient:
                 }
             else:
                 # Fallback for unsupported models - add instruction to the input
-                payload["input"] = f"{input_with_task}\n\nPlease respond with valid JSON that follows this schema: {json.dumps(schema)}"
-                payload["text"] = {"format": {"type": "json_object"}}
+                payload["input"] = f"{input_with_context_and_task}\n\nPlease respond with valid JSON that follows this schema: {json.dumps(schema)}"
+                text_config = {"format": {"type": "json_object"}}
+        else:
+            text_config = {}
+            
+        # Add verbosity for applicable models
+        if self._supports_verbosity(model):
+            text_config["verbosity"] = verbosity
+            
+        # Set text object if there's any configuration
+        if text_config:
+            payload["text"] = text_config
         
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -931,10 +939,11 @@ class OpenAIClient:
         model: str = "gpt-5-nano",
         reasoning: dict = None,
         verbosity: str = "medium",
+        context: str = "",
     ) -> dict:
         """Handle queries with tools using the traditional chat/completions API."""
         url = f"{self.base_url}/chat/completions"
-        payload = self._build_chat_payload(query, json_schema, tools, model, reasoning=reasoning, verbosity=verbosity)
+        payload = self._build_chat_payload(query, json_schema, tools, model, reasoning=reasoning, verbosity=verbosity, context=context)
         self.query = query
         
         headers = {
@@ -1050,6 +1059,7 @@ class OpenAIClient:
         input_text: str,
         json_schema: t.Optional[dict | t.Any] = None,
         model_name: t.Optional[str] = None,
+        context: str = "",
     ) -> dict:
         """Send a query using the new OpenAI Responses API.
         
@@ -1065,11 +1075,15 @@ class OpenAIClient:
         model = "gpt-5-nano"
         
         # Build payload for Responses API
-        # Prepend task to the input text
-        input_with_task = f"<task>{self.role}</task>\n\n{input_text}"
+        # Format input with context and task
+        input_with_context_and_task = ""
+        if context.strip():
+            input_with_context_and_task += f"<context>{context}</context>\n\n"
+        input_with_context_and_task += f"<task>{self.role}</task>\n\n{input_text}"
+        
         payload = {
             "model": model,
-            "input": input_with_task,
+            "input": input_with_context_and_task,
             "max_output_tokens": 4000,  # Responses API uses max_output_tokens
             "temperature": 1,
         }
@@ -1088,7 +1102,7 @@ class OpenAIClient:
                 }
             else:
                 # Fallback for unsupported models - add instruction to the input
-                payload["input"] = f"{input_with_task}\n\nPlease respond with valid JSON that follows this schema: {json.dumps(schema)}"
+                payload["input"] = f"{input_with_context_and_task}\n\nPlease respond with valid JSON that follows this schema: {json.dumps(schema)}"
                 payload["text"] = {"format": {"type": "json_object"}}
         
         headers = {
@@ -1171,6 +1185,7 @@ class OpenAIClient:
         model_name: t.Optional[str] = None,
         reasoning: t.Optional[dict] = None,
         verbosity: t.Optional[str] = None,
+        context: str = "",
     ) -> t.Iterator[str]:
         """Send a query to OpenAI and return a streaming response.
         
@@ -1204,7 +1219,7 @@ class OpenAIClient:
             effective_verbosity = self._validate_verbosity(verbosity)
         
         url = f"{self.base_url}/chat/completions"
-        payload = self._build_chat_payload(query, json_schema, tools, model, stream=True, reasoning=effective_reasoning, verbosity=effective_verbosity)
+        payload = self._build_chat_payload(query, json_schema, tools, model, stream=True, reasoning=effective_reasoning, verbosity=effective_verbosity, context=context)
         self.query = query
         
         headers = {
@@ -1354,12 +1369,8 @@ class OpenAIClient:
                       Allowed values: "low", "medium", "high".
                       If None, uses default from initialization.
         """
-        # Add context from other agents if provided
-        if context_from_other_agents.strip():
-            self.add_context_from_other_agents(context_from_other_agents)
-        
-        # Use regular invoke method which now includes conversation history
-        return self.invoke(query, json_schema, tools, model_name, reasoning, verbosity)
+        # Use regular invoke method with context parameter instead of adding to conversation history
+        return self.invoke(query, json_schema, tools, model_name, reasoning, verbosity, context=context_from_other_agents)
 
 
 if __name__ == "__main__":
