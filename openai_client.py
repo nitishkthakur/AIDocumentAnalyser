@@ -158,7 +158,11 @@ class OpenAIClient:
 
         # System instructions without the task and context (both will go to user message instead)
         self.generic_agent_instructions = GENERIC_AGENT_INSTRUCTIONS.format(CURRENT_DATE=CURRENT_DATE)
-        self.system_instructions = self.generic_agent_instructions
+
+        if system_instructions == "":
+            self.system_instructions = self.generic_agent_instructions
+        else:
+            self.system_instructions = system_instructions
 
     def _validate_reasoning(self, reasoning: dict) -> dict:
         """Validate and return reasoning parameter.
