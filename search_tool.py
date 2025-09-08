@@ -8,7 +8,7 @@ load_dotenv()
 
 def search_web(search_query: str) -> str:
     """
-    Search the web using Tavily API and return formatted search results.
+    Search the web using Tavily API and return formatted search results. use this tool if the user wants latest information on something, or details that might benefit from a web search. If you are uncertain, use this tool. 
     
     Args:
         search_query (str): The search query to execute

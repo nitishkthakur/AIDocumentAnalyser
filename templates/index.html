@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jarvis Lite</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                50: '#eff6ff',
+                100: '#dbeafe',
+                200: '#bfdbfe',
+                300: '#93c5fd',
+                400: '#60a5fa',
+                500: '#3b82f6',
+                600: '#2563eb',
+                700: '#1d4ed8',
+                800: '#1e40af',
+                900: '#1e3a8a',
+              },
+            },
+            fontFamily: {
+              sans: ["Inter", "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "Roboto", "Helvetica Neue", "Arial", "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"],
+            },
+          },
+        },
+      };
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  </head>
+  <body class="h-full bg-slate-50 text-slate-800">
+    <div class="min-h-screen flex flex-col">
+      
+      <nav class="bg-brand-700 text-white shadow-sm">
+        <div class="mx-auto w-[80vw] max-w-5xl px-4">
+          <div class="h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+              <div class="h-9 w-9 rounded-lg bg-gradient-to-br from-brand-400 to-brand-700 flex items-center justify-center shadow-inner">
+                <span class="font-bold">J</span>
+              </div>
+              <div>
+                <div class="text-xl font-semibold tracking-wide">Jarvis Lite</div>
+                <div class="text-xs text-brand-200">Lightweight AI chat</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      
+      <main class="flex-1">
+        <div class="mx-auto w-[80vw] max-w-5xl px-4 py-6">
+          <div
+            x-data="chatApp()"
+            class="flex flex-col h-[calc(100vh-8rem)] bg-white/70 backdrop-blur rounded-xl border border-slate-200 shadow-sm"
+          >
+            
+            <div x-ref="messages" class="flex-1 overflow-y-auto p-4 space-y-4">
+              <template x-for="m in messages" :key="m.id">
+                <div class="flex" :class="m.role === 'user' ? 'justify-end' : 'justify-start'">
+                  <div
+                    class="max-w-[75%] px-4 py-3 rounded-2xl text-sm leading-relaxed"
+                    :class="m.role === 'user' ? 'bg-gradient-to-br from-brand-500 to-brand-700 text-white rounded-tr-sm' : 'bg-slate-100 text-slate-800 rounded-tl-sm'"
+                    x-text="m.text"
+                  ></div>
+                </div>
+              </template>
+              <div x-show="loading" class="flex items-center space-x-2 text-slate-500">
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                </svg>
+                <span class="text-sm">Jarvis Lite is thinking…</span>
+              </div>
+            </div>
+
+            
+            <form @submit.prevent="send()" class="border-t border-slate-200 p-3">
+              <div class="flex items-end space-x-2">
+                <textarea
+                  x-model="input"
+                  placeholder="Type your message…"
+                  rows="1"
+                  class="flex-1 resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                  @keydown.enter.exact.prevent="send()"
+                ></textarea>
+                <button
+                  type="submit"
+                  :disabled="!input.trim() || loading"
+                  class="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+                    <path d="M3.105 2.289a1 1 0 011.042-.094l13 6.5a1 1 0 010 1.81l-13 6.5A1 1 0 012 16.5v-4.382a1 1 0 01.553-.894L9.197 9.5 2.553 6.776A1 1 0 012 5.882V2.5a1 1 0 011.105-.211z" />
+                  </svg>
+                  Send
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      function chatApp() {
+        return {
+          messages: [
+            { id: crypto.randomUUID(), role: 'bot', text: 'Hello! I\'m Jarvis Lite. How can I help you today?' }
+          ],
+          input: '',
+          loading: false,
+          send() {
+            const text = this.input.trim();
+            if (!text || this.loading) return;
+
+            // Push user message
+            this.messages.push({ id: crypto.randomUUID(), role: 'user', text });
+
+            // Create placeholder for bot response
+            const botId = crypto.randomUUID();
+            const botMsg = { id: botId, role: 'bot', text: '' };
+            this.messages.push(botMsg);
+            this.loading = true;
+            this.input = '';
+            this.$nextTick(() => this.scrollToBottom());
+
+            // Open SSE stream
+            const url = `/stream?q=${encodeURIComponent(text)}`;
+            const es = new EventSource(url);
+
+            es.addEventListener('start', () => {
+              // no-op, but could show typing indicator
+            });
+
+            es.onmessage = (e) => {
+              botMsg.text += e.data + ' ';
+              this.$nextTick(() => this.scrollToBottom());
+            };
+
+            es.addEventListener('done', () => {
+              es.close();
+              this.loading = false;
+              this.$nextTick(() => this.scrollToBottom());
+            });
+
+            es.onerror = () => {
+              es.close();
+              this.loading = false;
+            };
+          },
+          scrollToBottom() {
+            const el = this.$refs.messages;
+            if (el) el.scrollTop = el.scrollHeight;
+          }
+        }
+      }
+    </script>
+  </body>
+  </html>
