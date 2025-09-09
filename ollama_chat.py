@@ -7,11 +7,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-class OpenAIChat:
-    """Simplified OpenAI chat client using only the Responses API.
+class OllamaChat:
+    """Simplified Ollama chat client with tool calling and structured outputs.
     
     Basic usage:
-        chat = OpenAIChat()
+        chat = OllamaChat()
         response = chat.invoke("Hello")  # Returns string
         response = chat.invoke("Extract data", json_schema=schema)  # Returns parsed JSON
         response = chat.invoke("Get weather", tools=[weather_func])  # Returns {"tool_name": str, "tool_return": any}
@@ -19,37 +19,42 @@ class OpenAIChat:
     
     TYPE_MAPPING = {str: "string", int: "integer", float: "number", bool: "boolean", dict: "object", list: "array"}
 
-    def __init__(self, api_key: str = None, model_name: str = "gpt-5-nano", 
+    def __init__(self, api_key: str = None, model_name: str = "qwen3:4b", 
                  reasoning: dict = None, verbosity: str = "medium",
-                 system_instructions: str = ""):
-        """Initialize the OpenAI chat client."""
-        self.api_key = api_key or os.getenv('OPENAI_API_KEY')
-        if not self.api_key:
-            raise ValueError("OpenAI API key not found. Set OPENAI_API_KEY environment variable.")
+                 system_instructions: str = "", base_url: str = "http://localhost:11434"):
+        """Initialize the Ollama chat client."""
+        # Ollama doesn't require an API key for local instances, but keep for compatibility
+        self.api_key = api_key or os.getenv('OLLAMA_API_KEY', 'ollama')
         
-        # Only allow gpt-5-nano and gpt-5-mini
-        allowed_models = ["gpt-5-nano", "gpt-5-mini", 'gpt-5']
-        if model_name not in allowed_models:
-            print(f"Warning: {model_name} not in allowed models {allowed_models}. Using gpt-5-nano instead.")
-            model_name = "gpt-5-nano"
-        
-        self.base_url = "https://api.openai.com/v1"
-        self.model = model_name
+        # Use llama3.2:3b as default, but allow other models
+        self.model = model_name or "llama3.2:3b"
+        self.base_url = base_url
         self.conversation_history: list[dict] = []
         self.system_instructions = system_instructions
 
-        # Reasoning and verbosity defaults
-        self.default_reasoning = reasoning or {"effort": "medium"}
+        # Reasoning and verbosity defaults (adapted for Ollama)
+        self.default_reasoning = reasoning or {"temperature": 0.8}
         self.default_verbosity = verbosity
         self._validate_reasoning(self.default_reasoning)
         self._validate_verbosity(self.default_verbosity)
 
     def _validate_reasoning(self, reasoning: dict) -> dict:
-        """Validate reasoning parameter."""
-        if not isinstance(reasoning, dict) or "effort" not in reasoning:
-            raise ValueError("reasoning must be a dict with 'effort' key")
-        if reasoning["effort"] not in ["minimal", "low", "medium", "high"]:
-            raise ValueError("reasoning effort must be: minimal, low, medium, or high")
+        """Validate reasoning parameter (Ollama uses temperature instead of effort)."""
+        if not isinstance(reasoning, dict):
+            raise ValueError("reasoning must be a dict")
+        # Convert OpenAI effort levels to Ollama temperature
+        if "effort" in reasoning:
+            effort_to_temp = {
+                "minimal": 0.2,
+                "low": 0.4,
+                "medium": 0.8,
+                "high": 1.2
+            }
+            temp = effort_to_temp.get(reasoning["effort"], 0.8)
+            reasoning["temperature"] = temp
+            reasoning.pop("effort", None)
+        if "temperature" not in reasoning:
+            reasoning["temperature"] = 0.8
         return reasoning
     
     def _validate_verbosity(self, verbosity: str) -> str:
@@ -72,8 +77,8 @@ class OpenAIChat:
         
         for tool_call in tool_calls:
             try:
-                tool_name = tool_call.get("name", "")
-                tool_args = tool_call.get("arguments", "")
+                tool_name = tool_call.get("function", {}).get("name", "")
+                tool_args = tool_call.get("function", {}).get("arguments", "")
                 
                 # Handle both string and dict formats
                 if isinstance(tool_args, str):
@@ -130,13 +135,14 @@ class OpenAIChat:
         
         return {
             "type": "function",
-            "name": func.__name__,
-            "description": docstring,
-            "parameters": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
-                "additionalProperties": False
+            "function": {
+                "name": func.__name__,
+                "description": docstring,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required
+                }
             }
         }
 
@@ -174,7 +180,7 @@ class OpenAIChat:
         return None
 
     def _make_schema_strict_compatible(self, schema: dict) -> dict:
-        """Make schema compatible with OpenAI strict mode."""
+        """Make schema compatible with structured output."""
         if not isinstance(schema, dict):
             return schema
         
@@ -198,13 +204,13 @@ class OpenAIChat:
         return strict_schema
 
     def _build_input_messages(self, query: str) -> list[dict]:
-        """Build input messages for Responses API."""
+        """Build input messages for Ollama chat API."""
         messages = []
         
-        # Add system instructions if provided (using developer role)
+        # Add system instructions if provided
         if self.system_instructions:
             messages.append({
-                "role": "developer", 
+                "role": "system", 
                 "content": self.system_instructions
             })
         
@@ -214,29 +220,29 @@ class OpenAIChat:
         
         return messages
 
-    def _build_responses_payload(self, query: str, reasoning: dict = None, verbosity: str = "medium", tools: t.Optional[t.Iterable[t.Callable]] = None) -> dict:
+    def _build_ollama_payload(self, query: str, reasoning: dict = None, verbosity: str = "medium", tools: t.Optional[t.Iterable[t.Callable]] = None) -> dict:
         """Build payload for testing purposes."""
-        # Build input - use simple string for basic queries
-        if self.system_instructions:
-            input_data = f"System: {self.system_instructions}\n\nUser: {query}"
-        else:
-            input_data = query
+        messages = self._build_input_messages(query)
+        
+        # Ollama options based on verbosity
+        verbosity_to_options = {
+            "low": {"num_predict": 50, "temperature": 0.3},
+            "medium": {"num_predict": 200, "temperature": 0.8},
+            "high": {"num_predict": 500, "temperature": 1.2}
+        }
+        
+        reasoning_config = reasoning or {"temperature": 0.8}
+        base_options = verbosity_to_options.get(verbosity, verbosity_to_options["medium"])
+        
+        # Merge reasoning config with verbosity options
+        options = {**base_options, **reasoning_config}
         
         payload = {
             "model": self.model,
-            "input": input_data,
-            "max_output_tokens": 4000,
-        }
-        
-        # Add reasoning
-        reasoning_config = reasoning or {"effort": "medium"}
-        payload["reasoning"] = {
-            "effort": reasoning_config.get("effort", "medium")
-        }
-        
-        # Add verbosity
-        payload["text"] = {
-            "verbosity": verbosity
+            "messages": messages,
+            "stream": False,
+            "keep_alive": "15m",  # 15 minutes as requested
+            "options": options
         }
         
         # Add tools if provided
@@ -244,14 +250,13 @@ class OpenAIChat:
             tool_schemas = self._build_tools(tools)
             if tool_schemas:
                 payload["tools"] = tool_schemas
-                payload["tool_choice"] = "auto"
         
         return payload
 
     def invoke(self, query: str, json_schema: t.Optional[dict | t.Any] = None, 
                tools: t.Optional[t.Iterable[t.Callable]] = None, reasoning: t.Optional[dict] = None, 
                verbosity: t.Optional[str] = None, system_instructions: t.Optional[str] = None):
-        """Send query to OpenAI using Responses API and return response.
+        """Send query to Ollama and return response.
         
         Returns:
             - Tool calls: {"tool_name": str, "tool_return": any}
@@ -272,8 +277,8 @@ class OpenAIChat:
         if verbosity is not None:
             effective_verbosity = self._validate_verbosity(verbosity)
         
-        # Use Responses API for all queries
-        result = self._invoke_responses_api(query, json_schema, tools, effective_reasoning, effective_verbosity)
+        # Use Ollama chat API for all queries
+        result = self._invoke_ollama_api(query, json_schema, tools, effective_reasoning, effective_verbosity)
         
         # Return tool result in simplified format
         if result.get('tool_calls') and result.get('tool_results'):
@@ -281,7 +286,7 @@ class OpenAIChat:
             tool_results = result['tool_results']
             if tool_calls and tool_results:
                 first_tool_call = tool_calls[0]
-                tool_name = first_tool_call.get("name", "")
+                tool_name = first_tool_call.get("function", {}).get("name", "")
                 if tool_name in tool_results:
                     return {
                         "tool_name": tool_name, 
@@ -298,54 +303,54 @@ class OpenAIChat:
         
         return result['text']
 
-    def _invoke_responses_api(self, query: str, json_schema: t.Optional[dict | t.Any] = None, 
-                            tools: t.Optional[t.Iterable[t.Callable]] = None, reasoning: dict = None, 
-                            verbosity: str = "medium") -> dict:
-        """Handle all queries using Responses API."""
-        url = f"{self.base_url}/responses"
+    def _invoke_ollama_api(self, query: str, json_schema: t.Optional[dict | t.Any] = None, 
+                          tools: t.Optional[t.Iterable[t.Callable]] = None, reasoning: dict = None, 
+                          verbosity: str = "medium") -> dict:
+        """Handle all queries using Ollama chat API."""
+        url = f"{self.base_url}/api/chat"
         
-        # Build input - use simple string for basic queries, messages for complex ones
-        if self.system_instructions or self.conversation_history:
-            input_data = self._build_input_messages(query)
-        else:
-            # Simple string input for basic queries
-            input_data = query
+        messages = self._build_input_messages(query)
+        
+        # Ollama options based on verbosity and reasoning
+        verbosity_to_options = {
+            "low": {"num_predict": 50, "temperature": 0.3},
+            "medium": {"num_predict": 200, "temperature": 0.8},
+            "high": {"num_predict": 500, "temperature": 1.2}
+        }
+        
+        reasoning_config = reasoning or {"temperature": 0.8}
+        base_options = verbosity_to_options.get(verbosity, verbosity_to_options["medium"])
+        
+        # Merge reasoning config with verbosity options
+        options = {**base_options, **reasoning_config}
         
         # Build payload
         payload = {
             "model": self.model,
-            "input": input_data,
-            "max_output_tokens": 4000,
-        }
-        
-        # Add reasoning
-        reasoning_config = reasoning or {"effort": "medium"}
-        payload["reasoning"] = {
-            "effort": reasoning_config.get("effort", "medium")
-        }
-        
-        # Add verbosity and format structure
-        payload["text"] = {
-            "verbosity": verbosity
+            "messages": messages,
+            "stream": False,
+            "keep_alive": "15m",  # 15 minutes as requested
+            "options": options
         }
         
         # Add tools if provided
         tool_schemas = self._build_tools(tools)
         if tool_schemas:
             payload["tools"] = tool_schemas
-            payload["tool_choice"] = "auto"  # Let the model decide when to use tools
         
         # Add structured output if provided
         schema = self._extract_json_schema(json_schema)
         if schema:
-            payload["text"]["format"] = {
-                "type": "json_schema",
-                "name": "structured_response",
-                "strict": True,
-                "schema": schema
-            }
+            payload["format"] = "json"
+            # Add schema instruction to system message
+            schema_instruction = f"Please respond with valid JSON that follows this schema: {json.dumps(schema)}"
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += f"\n\n{schema_instruction}"
+            else:
+                messages.insert(0, {"role": "system", "content": schema_instruction})
+            payload["messages"] = messages
         
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json"}
         response = requests.post(url, json=payload, headers=headers, timeout=300)
         
         try:
@@ -353,8 +358,8 @@ class OpenAIChat:
         except requests.exceptions.HTTPError as e:
             try:
                 error_data = response.json()
-                error_msg = error_data.get('error', {}).get('message', str(e))
-                print(f"OpenAI Responses API Error: {error_msg}")
+                error_msg = error_data.get('error', str(e))
+                print(f"Ollama API Error: {error_msg}")
                 print(f"Request payload: {json.dumps(payload, indent=2)}")
                 raise
             except json.JSONDecodeError:
@@ -365,25 +370,10 @@ class OpenAIChat:
         
         data = response.json()
         
-        # Extract text and tool calls from Responses API structure
-        output = data.get("output", [])
-        assistant_response = ""
-        tool_calls = []
-        
-        for item in output:
-            if item.get("type") == "message":
-                # Extract text content
-                content = item.get("content", [])
-                for content_item in content:
-                    if content_item.get("type") == "output_text":
-                        assistant_response += content_item.get("text", "")
-            elif item.get("type") == "function_call":
-                # Extract function call (Responses API format)
-                tool_calls.append({
-                    "name": item.get("name", ""),
-                    "arguments": item.get("arguments", ""),  # This is a JSON string
-                    "call_id": item.get("id", "")
-                })
+        # Extract text and tool calls from Ollama response
+        message = data.get("message", {})
+        assistant_response = message.get("content", "")
+        tool_calls = message.get("tool_calls", [])
         
         # Execute tool calls
         tool_execution_results = {}
@@ -402,16 +392,12 @@ class OpenAIChat:
 
 if __name__ == "__main__":
     """Example usage."""
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        print("Set OPENAI_API_KEY environment variable to run examples")
-        exit(0)
     
     def get_weather(city: str) -> str:
         """Get weather for a city."""
         return f"{city}: 24°C, sunny"
 
-    chat = OpenAIChat()
+    chat = OllamaChat()
 
     # Basic chat
     print("=== Basic Chat ===")
