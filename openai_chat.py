@@ -286,7 +286,8 @@ class OpenAIChat:
                     return {
                         "tool_name": tool_name, 
                         "tool_return": tool_results[tool_name],
-                        "text": result['text']
+                        "text": result['text'],
+                        "raw": result['raw']
                     }
         
         # Parse JSON if schema was used
@@ -397,7 +398,8 @@ class OpenAIChat:
         return {
             "text": assistant_response,
             "tool_calls": tool_calls,
-            "tool_results": tool_execution_results
+            "tool_results": tool_execution_results,
+            "raw": data
         }
 
 if __name__ == "__main__":

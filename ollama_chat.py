@@ -8,20 +8,36 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class OllamaChat:
-    """Simplified Ollama chat client with tool calling and structured outputs.
+    """Simplified Ollama chat client with tool calling, structured outputs, and anti-truncation features.
+    
+    Features:
+    - Prevents output truncation with num_predict=-1 (unlimited output)
+    - Context window (8192 tokens by default, configurable via num_ctx env variable)
+    - Environment variable support for num_ctx configuration
+    - Configurable output parameters for different use cases
+    - Tool calling and function execution
+    - Structured JSON outputs with schema validation
+    - Conversation history management
     
     Basic usage:
         chat = OllamaChat()
         response = chat.invoke("Hello")  # Returns string
         response = chat.invoke("Extract data", json_schema=schema)  # Returns parsed JSON
         response = chat.invoke("Get weather", tools=[weather_func])  # Returns {"tool_name": str, "tool_return": any}
+        
+    Environment variable configuration:
+        export num_ctx=16384  # Set context window to 16k tokens
+        chat = OllamaChat()   # Will use 16384 from environment
+        
+    Anti-truncation usage:
+        chat.optimize_for_long_output()  # Configure for maximum output length
+        chat.set_output_parameters(max_tokens=-1, context_size=65536)  # Custom parameters
     """
     
     TYPE_MAPPING = {str: "string", int: "integer", float: "number", bool: "boolean", dict: "object", list: "array"}
 
     def __init__(self, api_key: str = None, model_name: str = "qwen3:4b", 
-                 reasoning: dict = None, verbosity: str = "medium",
-                 system_instructions: str = "", base_url: str = "http://localhost:11434"):
+                 reasoning: dict = None, system_instructions: str = "", base_url: str = "http://localhost:11434"):
         """Initialize the Ollama chat client."""
         # Ollama doesn't require an API key for local instances, but keep for compatibility
         self.api_key = api_key or os.getenv('OLLAMA_API_KEY', 'ollama')
@@ -32,16 +48,36 @@ class OllamaChat:
         self.conversation_history: list[dict] = []
         self.system_instructions = system_instructions
 
-        # Reasoning and verbosity defaults (adapted for Ollama)
-        self.default_reasoning = reasoning or {"temperature": 0.8}
-        self.default_verbosity = verbosity
+        # Get num_ctx from environment variable or use default
+        env_num_ctx = os.getenv('num_ctx')
+        default_num_ctx = 4*4096  # Default to 16384 tokens
+        
+        if env_num_ctx is not None:
+            try:
+                num_ctx_value = int(env_num_ctx)
+                print(f"Using num_ctx from environment: {num_ctx_value}")
+            except ValueError:
+                print(f"Invalid num_ctx environment variable '{env_num_ctx}', using default: {default_num_ctx}")
+                num_ctx_value = default_num_ctx
+        else:
+            num_ctx_value = default_num_ctx
+
+        # Reasoning defaults (adapted for Ollama) - Set parameters to prevent truncation
+        self.default_reasoning = reasoning or {
+            "temperature": 0.8,
+            "num_predict": -1,  # -1 means unlimited output until stop condition
+            "num_ctx": num_ctx_value,   # Context window from env or default
+            "top_p": 0.9,
+            "top_k": 40,
+            "repeat_penalty": 1.1
+        }
         self._validate_reasoning(self.default_reasoning)
-        self._validate_verbosity(self.default_verbosity)
 
     def _validate_reasoning(self, reasoning: dict) -> dict:
         """Validate reasoning parameter (Ollama uses temperature instead of effort)."""
         if not isinstance(reasoning, dict):
             raise ValueError("reasoning must be a dict")
+        
         # Convert OpenAI effort levels to Ollama temperature
         if "effort" in reasoning:
             effort_to_temp = {
@@ -53,19 +89,74 @@ class OllamaChat:
             temp = effort_to_temp.get(reasoning["effort"], 0.8)
             reasoning["temperature"] = temp
             reasoning.pop("effort", None)
+        
+        # Set defaults to prevent truncation if not provided
         if "temperature" not in reasoning:
             reasoning["temperature"] = 0.8
+        if "num_predict" not in reasoning:
+            reasoning["num_predict"] = -1  # Unlimited output
+        if "num_ctx" not in reasoning:
+            # Get from environment or use default
+            env_num_ctx = os.getenv('num_ctx')
+            default_num_ctx = 2*4096
+            if env_num_ctx is not None:
+                try:
+                    reasoning["num_ctx"] = int(env_num_ctx)
+                except ValueError:
+                    reasoning["num_ctx"] = default_num_ctx
+            else:
+                reasoning["num_ctx"] = default_num_ctx
+        if "top_p" not in reasoning:
+            reasoning["top_p"] = 0.9
+        if "top_k" not in reasoning:
+            reasoning["top_k"] = 40
+        if "repeat_penalty" not in reasoning:
+            reasoning["repeat_penalty"] = 1.1
+            
         return reasoning
     
-    def _validate_verbosity(self, verbosity: str) -> str:
-        """Validate verbosity parameter."""
-        if verbosity not in ["low", "medium", "high"]:
-            raise ValueError("verbosity must be: low, medium, or high")
-        return verbosity
-
     def clear_conversation_history(self) -> None:
         """Clear conversation history."""
         self.conversation_history.clear()
+
+    def set_output_parameters(self, max_tokens: int = -1, context_size: int = 2*4096, 
+                             temperature: float = 0.8, top_p: float = 0.9, top_k: int = 40) -> None:
+        """Configure output parameters to prevent truncation.
+        
+        Args:
+            max_tokens (int): Maximum output tokens (-1 for unlimited, recommended to prevent truncation)
+            context_size (int): Context window size (8192 tokens by default)
+            temperature (float): Randomness/creativity (0.0-2.0, default 0.8)
+            top_p (float): Nucleus sampling threshold (0.0-1.0, default 0.9)
+            top_k (int): Top-k sampling limit (default 40)
+        """
+        self.default_reasoning.update({
+            "num_predict": max_tokens,
+            "num_ctx": context_size,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k
+        })
+
+    def optimize_for_long_output(self) -> None:
+        """Optimize settings specifically for generating long, untruncated outputs."""
+        self.set_output_parameters(
+            max_tokens=-1,      # Unlimited output
+            context_size=65536, # Very large context (64k tokens)
+            temperature=0.7,    # Slightly lower temperature for consistency
+            top_p=0.95,         # Higher top_p for more diverse vocabulary
+            top_k=50            # Higher top_k for more options
+        )
+
+    def get_effective_num_ctx(self) -> int:
+        """Get the current effective num_ctx value (from env or default)."""
+        env_num_ctx = os.getenv('num_ctx')
+        if env_num_ctx is not None:
+            try:
+                return int(env_num_ctx)
+            except ValueError:
+                pass
+        return self.default_reasoning.get('num_ctx', 2*4096)
 
     def _execute_tool_calls(self, tool_calls: list, available_tools: t.Optional[t.Iterable[t.Callable]]) -> dict:
         """Execute tool calls and return results."""
@@ -220,22 +311,29 @@ class OllamaChat:
         
         return messages
 
-    def _build_ollama_payload(self, query: str, reasoning: dict = None, verbosity: str = "medium", tools: t.Optional[t.Iterable[t.Callable]] = None) -> dict:
+    def _build_ollama_payload(self, query: str, reasoning: dict = None, tools: t.Optional[t.Iterable[t.Callable]] = None) -> dict:
         """Build payload for testing purposes."""
         messages = self._build_input_messages(query)
         
-        # Ollama options based on verbosity
-        verbosity_to_options = {
-            "low": {"num_predict": 50, "temperature": 0.3},
-            "medium": {"num_predict": 200, "temperature": 0.8},
-            "high": {"num_predict": 500, "temperature": 1.2}
-        }
+        # Ollama options based on reasoning - ensure no truncation
+        reasoning_config = reasoning or self.default_reasoning
         
-        reasoning_config = reasoning or {"temperature": 0.8}
-        base_options = verbosity_to_options.get(verbosity, verbosity_to_options["medium"])
-        
-        # Merge reasoning config with verbosity options
-        options = {**base_options, **reasoning_config}
+        # Ensure we have anti-truncation parameters
+        if "num_predict" not in reasoning_config:
+            reasoning_config["num_predict"] = -1  # Unlimited output
+        if "num_ctx" not in reasoning_config:
+            # Get from environment or use default
+            env_num_ctx = os.getenv('num_ctx')
+            default_num_ctx = 2*4096
+            if env_num_ctx is not None:
+                try:
+                    reasoning_config["num_ctx"] = int(env_num_ctx)
+                except ValueError:
+                    reasoning_config["num_ctx"] = default_num_ctx
+            else:
+                reasoning_config["num_ctx"] = default_num_ctx
+            
+        options = reasoning_config
         
         payload = {
             "model": self.model,
@@ -255,7 +353,7 @@ class OllamaChat:
 
     def invoke(self, query: str, json_schema: t.Optional[dict | t.Any] = None, 
                tools: t.Optional[t.Iterable[t.Callable]] = None, reasoning: t.Optional[dict] = None, 
-               verbosity: t.Optional[str] = None, system_instructions: t.Optional[str] = None):
+               system_instructions: t.Optional[str] = None):
         """Send query to Ollama and return response.
         
         Returns:
@@ -269,16 +367,13 @@ class OllamaChat:
         
         # Use provided parameters or defaults
         effective_reasoning = reasoning or self.default_reasoning
-        effective_verbosity = verbosity or self.default_verbosity
         
         # Validate if provided
         if reasoning is not None:
             effective_reasoning = self._validate_reasoning(reasoning)
-        if verbosity is not None:
-            effective_verbosity = self._validate_verbosity(verbosity)
         
         # Use Ollama chat API for all queries
-        result = self._invoke_ollama_api(query, json_schema, tools, effective_reasoning, effective_verbosity)
+        result = self._invoke_ollama_api(query, json_schema, tools, effective_reasoning)
         
         # Return tool result in simplified format
         if result.get('tool_calls') and result.get('tool_results'):
@@ -291,7 +386,8 @@ class OllamaChat:
                     return {
                         "tool_name": tool_name, 
                         "tool_return": tool_results[tool_name],
-                        "text": result['text']
+                        "text": result['text'],
+                        "raw": result['raw']
                     }
         
         # Parse JSON if schema was used
@@ -304,25 +400,31 @@ class OllamaChat:
         return result['text']
 
     def _invoke_ollama_api(self, query: str, json_schema: t.Optional[dict | t.Any] = None, 
-                          tools: t.Optional[t.Iterable[t.Callable]] = None, reasoning: dict = None, 
-                          verbosity: str = "medium") -> dict:
+                          tools: t.Optional[t.Iterable[t.Callable]] = None, reasoning: dict = None) -> dict:
         """Handle all queries using Ollama chat API."""
         url = f"{self.base_url}/api/chat"
         
         messages = self._build_input_messages(query)
         
-        # Ollama options based on verbosity and reasoning
-        verbosity_to_options = {
-            "low": {"num_predict": 50, "temperature": 0.3},
-            "medium": {"num_predict": 200, "temperature": 0.8},
-            "high": {"num_predict": 500, "temperature": 1.2}
-        }
+        # Ollama options based on reasoning - ensure no truncation
+        reasoning_config = reasoning or self.default_reasoning
         
-        reasoning_config = reasoning or {"temperature": 0.8}
-        base_options = verbosity_to_options.get(verbosity, verbosity_to_options["medium"])
-        
-        # Merge reasoning config with verbosity options
-        options = {**base_options, **reasoning_config}
+        # Ensure we have anti-truncation parameters
+        if "num_predict" not in reasoning_config:
+            reasoning_config["num_predict"] = -1  # Unlimited output
+        if "num_ctx" not in reasoning_config:
+            # Get from environment or use default
+            env_num_ctx = os.getenv('num_ctx')
+            default_num_ctx = 2*4096
+            if env_num_ctx is not None:
+                try:
+                    reasoning_config["num_ctx"] = int(env_num_ctx)
+                except ValueError:
+                    reasoning_config["num_ctx"] = default_num_ctx
+            else:
+                reasoning_config["num_ctx"] = default_num_ctx
+            
+        options = reasoning_config
         
         # Build payload
         payload = {
@@ -351,7 +453,9 @@ class OllamaChat:
             payload["messages"] = messages
         
         headers = {"Content-Type": "application/json"}
-        response = requests.post(url, json=payload, headers=headers, timeout=300)
+        # Increase timeout for long responses to prevent truncation due to timeouts
+        timeout = 600  # 10 minutes for very long outputs
+        response = requests.post(url, json=payload, headers=headers, timeout=timeout)
         
         try:
             response.raise_for_status()
@@ -387,23 +491,35 @@ class OllamaChat:
         return {
             "text": assistant_response,
             "tool_calls": tool_calls,
-            "tool_results": tool_execution_results
+            "tool_results": tool_execution_results,
+            "raw": data
         }
 
 if __name__ == "__main__":
-    """Example usage."""
+    """Example usage with anti-truncation features."""
     
     def get_weather(city: str) -> str:
         """Get weather for a city."""
         return f"{city}: 24°C, sunny"
 
+    # Initialize with anti-truncation defaults
     chat = OllamaChat()
-
+    
+    print("=== Anti-Truncation Configuration ===")
+    print(f"Default parameters: {chat.default_reasoning}")
+    
     # Basic chat
-    print("=== Basic Chat ===")
+    print("\n=== Basic Chat ===")
     result = chat.invoke("What is Python?")
     print(f"Q: What is Python?")
-    print(f"A: {result[:100]}...")
+    print(f"A: {result[:200]}..." if len(result) > 200 else result)
+    
+    # Test long output generation
+    print("\n=== Long Output Test ===")
+    chat.optimize_for_long_output()  # Configure for maximum output length
+    long_result = chat.invoke("Write a detailed explanation of machine learning with examples.")
+    print(f"Generated {len(long_result)} characters")
+    print(f"Sample: {long_result[:300]}...")
     
     # Tool calling
     print("\n=== Tool Call ===")
@@ -425,4 +541,10 @@ if __name__ == "__main__":
     structured = chat.invoke("Extract: John is 30 years old", json_schema=schema)
     print(f"Structured: {structured}")
     
-    print("\n✅ Examples complete")
+    # Custom output parameters
+    print("\n=== Custom Parameters Test ===")
+    chat.set_output_parameters(max_tokens=5000, context_size=16384)
+    custom_result = chat.invoke("Explain quantum computing in detail")
+    print(f"Custom output length: {len(custom_result)} characters")
+    
+    print("\n✅ Examples complete with anti-truncation features")

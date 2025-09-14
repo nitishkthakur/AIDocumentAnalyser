@@ -338,3 +338,98 @@ if __name__ == "__main__":
         parse_string_or_dict("This is just plain text with no dictionary")
     except ValueError as e:
         print(f"\nError with plain text: {e}")
+
+
+def extract_tagged_content(text: str, tag: str) -> str:
+    """
+    Extract content between XML-like tags from a string.
+    
+    Args:
+        text (str): The input string containing tagged content
+        tag (str): The tag name (without angle brackets)
+        
+    Returns:
+        str: The content between the opening and closing tags, or empty string if tags not found
+        
+    Examples:
+        >>> extract_tagged_content("Hello <final_answer>World</final_answer>!", "final_answer")
+        'World'
+        
+        >>> extract_tagged_content("Data: <result>42</result> End", "result")
+        '42'
+        
+        >>> extract_tagged_content("No tags here", "missing")
+        ''
+        
+        >>> extract_tagged_content("<answer>Multi\nline\ncontent</answer>", "answer")
+        'Multi\nline\ncontent'
+    """
+    if not isinstance(text, str):
+        raise TypeError(f"Expected string input, got {type(text).__name__}")
+    
+    if not isinstance(tag, str):
+        raise TypeError(f"Expected string tag, got {type(tag).__name__}")
+    
+    # Create opening and closing tag patterns
+    opening_tag = f"<{tag}>"
+    closing_tag = f"</{tag}>"
+    
+    # Find the start and end positions
+    start_pos = text.find(opening_tag)
+    if start_pos == -1:
+        return ""  # Opening tag not found
+    
+    # Move past the opening tag
+    content_start = start_pos + len(opening_tag)
+    
+    # Find the closing tag starting from after the opening tag
+    end_pos = text.find(closing_tag, content_start)
+    if end_pos == -1:
+        return ""  # Closing tag not found
+    
+    # Extract and return the content between tags
+    return text[content_start:end_pos]
+
+
+if __name__ == "__main__":
+    # Test the tag extraction function
+    print("=== Testing extract_tagged_content function ===")
+    
+    # Test basic functionality
+    test1 = "Hello <final_answer>World</final_answer>!"
+    result1 = extract_tagged_content(test1, "final_answer")
+    print(f"Input: {test1}")
+    print(f"Tag: final_answer")
+    print(f"Result: '{result1}'")
+    
+    # Test with different tag
+    test2 = "Data: <result>42</result> End"
+    result2 = extract_tagged_content(test2, "result")
+    print(f"\nInput: {test2}")
+    print(f"Tag: result")
+    print(f"Result: '{result2}'")
+    
+    # Test with multiline content
+    test3 = "<answer>Multi\nline\ncontent</answer>"
+    result3 = extract_tagged_content(test3, "answer")
+    print(f"\nInput: {test3}")
+    print(f"Tag: answer")
+    print(f"Result: '{result3}'")
+    
+    # Test with missing tags
+    test4 = "No tags here"
+    result4 = extract_tagged_content(test4, "missing")
+    print(f"\nInput: {test4}")
+    print(f"Tag: missing")
+    print(f"Result: '{result4}'")
+    
+    # Test with only opening tag
+    test5 = "Start <incomplete>content without closing"
+    result5 = extract_tagged_content(test5, "incomplete")
+    print(f"\nInput: {test5}")
+    print(f"Tag: incomplete")
+    print(f"Result: '{result5}'")
+    
+    print("\n=== Previous tests ===")
+    
+    # Previous test code for other functions
