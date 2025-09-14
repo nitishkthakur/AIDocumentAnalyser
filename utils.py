@@ -256,6 +256,31 @@ def parse_string_or_dict(input_data):
     raise ValueError(f"Could not parse dictionary from string: {text[:100]}...")
 
 
+    def extract_tagged_content(text: str, tag: str) -> tuple[str, str]:
+        """
+        Extract content between <tag> and </tag> from a string, and also return the part after the closing tag.
+
+        Args:
+            text (str): The input string.
+            tag (str): The tag name (without angle brackets).
+
+        Returns:
+            tuple[str, str]: (content between the tags, part of string after closing tag). If tags not found, returns ("", "").
+        """
+        opening = f"<{tag}>"
+        closing = f"</{tag}>"
+        start = text.find(opening)
+        if start == -1:
+            return "", ""
+        start += len(opening)
+        end = text.find(closing, start)
+        if end == -1:
+            return "", ""
+        enclosed = text[start:end]
+        after = text[end + len(closing):]
+        return enclosed, after
+
+
 # Example usage and testing
 if __name__ == "__main__":
     def test_function(x: int, y: str = "hello") -> str:

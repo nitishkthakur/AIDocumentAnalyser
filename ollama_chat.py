@@ -359,7 +359,7 @@ class OllamaChat:
         return strict_schema
 
     def _build_input_messages(self, query: str) -> list[dict]:
-        """Build input messages for Ollama chat API."""
+        """Build input messages for Ollama chat API from a single query."""
         messages = []
         
         # Add system instructions if provided
@@ -372,6 +372,45 @@ class OllamaChat:
         # Add conversation history and current query
         messages.extend(self.conversation_history)
         messages.append({"role": "user", "content": query})
+        
+        return messages
+    
+    def _build_input_messages_from_list(self, message_list: t.List[dict]) -> list[dict]:
+        """Build input messages for Ollama chat API from a message list.
+        
+        Args:
+            message_list: List of messages with 'role' and 'content' keys
+            
+        Returns:
+            List of messages ready for Ollama API
+        """
+        messages = []
+        
+        # Add system instructions if provided and not already in message list
+        has_system = any(msg.get('role') == 'system' for msg in message_list)
+        if self.system_instructions and not has_system:
+            messages.append({
+                "role": "system", 
+                "content": self.system_instructions
+            })
+        
+        # Add conversation history
+        messages.extend(self.conversation_history)
+        
+        # Validate and add provided messages
+        valid_roles = {'user', 'assistant', 'system', 'tool'}
+        for msg in message_list:
+            if not isinstance(msg, dict):
+                raise ValueError(f"Each message must be a dictionary, got {type(msg)}")
+            if 'role' not in msg or 'content' not in msg:
+                raise ValueError("Each message must have 'role' and 'content' keys")
+            if msg['role'] not in valid_roles:
+                raise ValueError(f"Message role must be one of {valid_roles}, got '{msg['role']}'")
+            
+            messages.append({
+                "role": msg['role'],
+                "content": msg['content']
+            })
         
         return messages
 
@@ -415,16 +454,31 @@ class OllamaChat:
         
         return payload
 
-    def invoke(self, query: str, json_schema: t.Optional[dict | t.Any] = None, 
+    def invoke(self, query: t.Optional[str] = None, json_schema: t.Optional[dict | t.Any] = None, 
                tools: t.Optional[t.Iterable[t.Callable]] = None, reasoning: t.Optional[dict] = None, 
-               system_instructions: t.Optional[str] = None):
-        """Send query to Ollama and return response.
+               system_instructions: t.Optional[str] = None, messages: t.Optional[t.List[dict]] = None):
+        """Send query or message list to Ollama and return response.
+        
+        Args:
+            query: Single query string (alternative to messages)
+            messages: List of conversation messages with roles (user/system/assistant/tool)
+            json_schema: Optional JSON schema for structured output
+            tools: Optional tools for function calling
+            reasoning: Optional reasoning parameters
+            system_instructions: Optional system instructions
+        
+        Note: Either query OR messages must be provided, not both.
         
         Returns:
-            - Tool calls: {"tool_name": str, "tool_return": any}
+            - Tool calls: {"tool_name": str, "tool_return": any} or list of such dicts
             - JSON schema: parsed JSON object
             - Otherwise: string response
         """
+        # Validate input parameters
+        if query is None and messages is None:
+            raise ValueError("Either 'query' or 'messages' parameter must be provided")
+        if query is not None and messages is not None:
+            raise ValueError("Cannot provide both 'query' and 'messages' parameters. Use one or the other.")
         # Update system instructions if provided
         if system_instructions is not None:
             self.system_instructions = system_instructions
@@ -437,7 +491,7 @@ class OllamaChat:
             effective_reasoning = self._validate_reasoning(reasoning)
         
         # Use Ollama chat API for all queries
-        result = self._invoke_ollama_api(query, json_schema, tools, effective_reasoning)
+        result = self._invoke_ollama_api(query, json_schema, tools, effective_reasoning, messages)
         
         # Return tool result in simplified format
         if result.get('tool_calls') and result.get('tool_results'):
@@ -479,12 +533,19 @@ class OllamaChat:
         
         return result['text']
 
-    def _invoke_ollama_api(self, query: str, json_schema: t.Optional[dict | t.Any] = None, 
-                          tools: t.Optional[t.Iterable[t.Callable]] = None, reasoning: dict = None) -> dict:
+    def _invoke_ollama_api(self, query: t.Optional[str] = None, json_schema: t.Optional[dict | t.Any] = None, 
+                          tools: t.Optional[t.Iterable[t.Callable]] = None, reasoning: dict = None, 
+                          messages: t.Optional[t.List[dict]] = None) -> dict:
         """Handle all queries using Ollama chat API."""
         url = f"{self.base_url}/api/chat"
         
-        messages = self._build_input_messages(query)
+        # Build messages based on input type
+        if messages is not None:
+            # Use provided message list, appending to conversation history
+            input_messages = self._build_input_messages_from_list(messages)
+        else:
+            # Use traditional query-based approach
+            input_messages = self._build_input_messages(query)
         
         # Ollama options based on reasoning - ensure no truncation
         reasoning_config = reasoning or self.default_reasoning
@@ -509,7 +570,7 @@ class OllamaChat:
         # Build payload
         payload = {
             "model": self.model,
-            "messages": messages,
+            "messages": input_messages,
             "stream": False,
             "keep_alive": "15m",  # 15 minutes as requested
             "options": options
@@ -526,11 +587,11 @@ class OllamaChat:
             payload["format"] = "json"
             # Add schema instruction to system message
             schema_instruction = f"Please respond with valid JSON that follows this schema: {json.dumps(schema)}"
-            if messages and messages[0]["role"] == "system":
-                messages[0]["content"] += f"\n\n{schema_instruction}"
+            if input_messages and input_messages[0]["role"] == "system":
+                input_messages[0]["content"] += f"\n\n{schema_instruction}"
             else:
-                messages.insert(0, {"role": "system", "content": schema_instruction})
-            payload["messages"] = messages
+                input_messages.insert(0, {"role": "system", "content": schema_instruction})
+            payload["messages"] = input_messages
         
         headers = {"Content-Type": "application/json"}
         # Increase timeout for long responses to prevent truncation due to timeouts
@@ -569,7 +630,18 @@ class OllamaChat:
                 tool_execution_results = self._execute_tool_calls(tool_calls, tools)
         
         # Update conversation history
-        self.conversation_history.append({"role": "user", "content": query})
+        if messages is not None:
+            # Add all provided messages to conversation history
+            for msg in messages:
+                self.conversation_history.append({
+                    "role": msg['role'], 
+                    "content": msg['content']
+                })
+        else:
+            # Traditional query approach
+            self.conversation_history.append({"role": "user", "content": query})
+        
+        # Always add the assistant response
         self.conversation_history.append({"role": "assistant", "content": assistant_response})
         
         return {
