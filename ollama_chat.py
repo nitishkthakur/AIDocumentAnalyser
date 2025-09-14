@@ -3,6 +3,7 @@ import json
 import typing as t
 import requests
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -47,6 +48,10 @@ class OllamaChat:
         self.base_url = base_url
         self.conversation_history: list[dict] = []
         self.system_instructions = system_instructions
+        
+        # Configuration for concurrent tool execution
+        self.concurrent_tool_execution = True  # Enable concurrent execution for multiple tools
+        self.max_concurrent_tools = 5  # Maximum number of concurrent tool executions
 
         # Get num_ctx from environment variable or use default
         env_num_ctx = os.getenv('num_ctx')
@@ -158,8 +163,18 @@ class OllamaChat:
                 pass
         return self.default_reasoning.get('num_ctx', 2*4096)
 
+    def configure_concurrent_execution(self, enabled: bool = True, max_workers: int = 5) -> None:
+        """Configure concurrent tool execution settings.
+        
+        Args:
+            enabled (bool): Whether to enable concurrent execution for multiple tool calls
+            max_workers (int): Maximum number of concurrent tool executions (default 5)
+        """
+        self.concurrent_tool_execution = enabled
+        self.max_concurrent_tools = max_workers
+
     def _execute_tool_calls(self, tool_calls: list, available_tools: t.Optional[t.Iterable[t.Callable]]) -> dict:
-        """Execute tool calls and return results."""
+        """Execute tool calls sequentially and return results."""
         if not tool_calls or not available_tools:
             return {}
         
@@ -183,6 +198,55 @@ class OllamaChat:
                     results[tool_name] = f"Error: Tool '{tool_name}' not found"
             except Exception as e:
                 results[tool_name] = f"Error: {str(e)}"
+        
+        return results
+
+    def _execute_single_tool_call(self, tool_call: dict, tool_map: dict) -> tuple[str, t.Any]:
+        """Execute a single tool call and return (tool_name, result)."""
+        try:
+            tool_name = tool_call.get("function", {}).get("name", "")
+            tool_args = tool_call.get("function", {}).get("arguments", "")
+            
+            # Handle both string and dict formats
+            if isinstance(tool_args, str):
+                tool_args = json.loads(tool_args)
+            elif not isinstance(tool_args, dict):
+                tool_args = {}
+            
+            if tool_name in tool_map:
+                result = tool_map[tool_name](**tool_args)
+                return (tool_name, result)
+            else:
+                return (tool_name, f"Error: Tool '{tool_name}' not found")
+        except Exception as e:
+            tool_name = tool_call.get("function", {}).get("name", "unknown")
+            return (tool_name, f"Error: {str(e)}")
+
+    def _execute_tool_calls_concurrent(self, tool_calls: list, available_tools: t.Optional[t.Iterable[t.Callable]], max_workers: int = 5) -> dict:
+        """Execute tool calls concurrently using ThreadPoolExecutor and return results."""
+        if not tool_calls or not available_tools:
+            return {}
+        
+        tool_map = {func.__name__: func for func in available_tools}
+        results = {}
+        
+        # Use ThreadPoolExecutor for concurrent execution
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(tool_calls))) as executor:
+            # Submit all tool calls for execution
+            future_to_tool_call = {
+                executor.submit(self._execute_single_tool_call, tool_call, tool_map): tool_call 
+                for tool_call in tool_calls
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_tool_call):
+                tool_call = future_to_tool_call[future]
+                try:
+                    tool_name, result = future.result()
+                    results[tool_name] = result
+                except Exception as e:
+                    tool_name = tool_call.get("function", {}).get("name", "unknown")
+                    results[tool_name] = f"Error during execution: {str(e)}"
         
         return results
 
@@ -380,15 +444,31 @@ class OllamaChat:
             tool_calls = result['tool_calls']
             tool_results = result['tool_results']
             if tool_calls and tool_results:
-                first_tool_call = tool_calls[0]
-                tool_name = first_tool_call.get("function", {}).get("name", "")
-                if tool_name in tool_results:
-                    return {
-                        "tool_name": tool_name, 
-                        "tool_return": tool_results[tool_name],
-                        "text": result['text'],
-                        "raw": result['raw']
-                    }
+                # Handle multiple tool calls - return list of dictionaries
+                if len(tool_calls) > 1:
+                    tool_call_results = []
+                    for tool_call in tool_calls:
+                        tool_name = tool_call.get("function", {}).get("name", "")
+                        if tool_name in tool_results:
+                            tool_call_results.append({
+                                "tool_name": tool_name,
+                                "tool_return": tool_results[tool_name],
+                                "text": result['text'],
+                                "raw": result['raw']
+                            })
+                    return tool_call_results if tool_call_results else result['text']
+                
+                # Handle single tool call - return single dictionary (backward compatibility)
+                else:
+                    first_tool_call = tool_calls[0]
+                    tool_name = first_tool_call.get("function", {}).get("name", "")
+                    if tool_name in tool_results:
+                        return {
+                            "tool_name": tool_name, 
+                            "tool_return": tool_results[tool_name],
+                            "text": result['text'],
+                            "raw": result['raw']
+                        }
         
         # Parse JSON if schema was used
         if json_schema:
@@ -482,7 +562,11 @@ class OllamaChat:
         # Execute tool calls
         tool_execution_results = {}
         if tool_calls and tools:
-            tool_execution_results = self._execute_tool_calls(tool_calls, tools)
+            # Use concurrent execution for multiple tool calls, sequential for single
+            if len(tool_calls) > 1:
+                tool_execution_results = self._execute_tool_calls_concurrent(tool_calls, tools)
+            else:
+                tool_execution_results = self._execute_tool_calls(tool_calls, tools)
         
         # Update conversation history
         self.conversation_history.append({"role": "user", "content": query})
