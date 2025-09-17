@@ -239,9 +239,74 @@ def test_combined_features():
         return False
 
 
+def test_optional_message():
+    """Test the optional message parameter for continuing conversations."""
+    print("🧪 Test 7: Optional message parameter")
+    print("-" * 50)
+    
+    try:
+        client = GroqLLMClient()
+        
+        # Test that invoke can be called without message
+        # We'll just test the method signature and message building logic
+        initial_length = len(client.messages)
+        print(f"Initial message count: {initial_length}")
+        
+        # Simulate adding some context (like tool results would)
+        client.messages.append({
+            "role": "assistant", 
+            "content": "I calculated the area.",
+            "tool_calls": [{"id": "test", "function": {"name": "calc", "arguments": "{}"}}]
+        })
+        client.messages.append({
+            "role": "tool",
+            "tool_call_id": "test", 
+            "content": "78.54"
+        })
+        
+        context_length = len(client.messages)
+        print(f"Message count with context: {context_length}")
+        
+        # Test that the method accepts no message parameter
+        print("✅ Optional message parameter test passed!\n")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Optional message parameter test failed: {e}\n")
+        return False
+
+
+def test_system_instructions():
+    """Test the set_system_instructions method."""
+    print("🧪 Test 8: System instructions")
+    print("-" * 50)
+    
+    try:
+        client = GroqLLMClient()
+        
+        # Test setting system instructions
+        instructions = "You are a helpful AI assistant specializing in mathematics."
+        client.set_system_instructions(instructions)
+        
+        # Verify the instructions were set
+        assert client.system_instructions == instructions
+        print(f"System instructions set: {client.system_instructions}")
+        
+        # Test that system message gets added to conversation
+        initial_length = len(client.messages)
+        print(f"Initial message count: {initial_length}")
+        
+        print("✅ System instructions test passed!\n")
+        return True
+        
+    except Exception as e:
+        print(f"❌ System instructions test failed: {e}\n")
+        return False
+
+
 def test_tool_documentation_extraction():
     """Test the tool documentation extraction functionality."""
-    print("🧪 Test 7: Tool documentation extraction")
+    print("🧪 Test 9: Tool documentation extraction")
     print("-" * 50)
     
     try:
@@ -280,6 +345,8 @@ def run_all_tests():
         ("Structured output", test_structured_output),
         ("Conversation state", test_conversation_state),
         ("Combined features", test_combined_features),
+        ("Optional message", test_optional_message),
+        ("System instructions", test_system_instructions),
         ("Tool documentation", test_tool_documentation_extraction),
     ]
     

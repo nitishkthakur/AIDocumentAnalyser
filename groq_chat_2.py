@@ -57,6 +57,7 @@ class GroqLLMClient:
         self.base_url = base_url
         self.messages: List[Dict[str, Any]] = []
         self.tool_results: Dict[str, Any] = {}
+        self.system_instructions: Optional[str] = None
         
         # Default headers for requests
         self.headers = {
@@ -254,7 +255,7 @@ class GroqLLMClient:
             })
     
     def invoke(self, 
-               message: str, 
+               message: Optional[str] = None, 
                tools: Optional[List[Callable]] = None, 
                json_schema: Optional[BaseModel] = None,
                reasoning: Optional[Dict[str, Any]] = None) -> tuple:
@@ -262,7 +263,7 @@ class GroqLLMClient:
         Main invoke method that sends a message to Groq and handles tools/structured output.
         
         Args:
-            message: User message to send
+            message: Optional user message to send. If not provided, continues conversation with existing context
             tools: List of callable functions that can be used as tools
             json_schema: Pydantic BaseModel class for structured output
             
@@ -274,11 +275,19 @@ class GroqLLMClient:
         # Clear previous tool results
         self.tool_results = {}
         
-        # Add user message to conversation
-        self.messages.append({
-            "role": "user",
-            "content": message
-        })
+        # Add system instructions if set and not already present
+        if self.system_instructions and (not self.messages or self.messages[0].get("role") != "system"):
+            self.messages.insert(0, {
+                "role": "system",
+                "content": self.system_instructions
+            })
+        
+        # Add user message to conversation (only if provided)
+        if message is not None:
+            self.messages.append({
+                "role": "user",
+                "content": message
+            })
         
         # Build request payload
         payload = {
@@ -393,6 +402,14 @@ class GroqLLMClient:
         """Clear the conversation history."""
         self.messages = []
         self.tool_results = {}
+    
+    def set_system_instructions(self, instructions: str):
+        """Set system instructions for the conversation.
+        
+        Args:
+            instructions: System instructions to guide the AI's behavior
+        """
+        self.system_instructions = instructions
     
     def get_conversation_history(self) -> List[Dict[str, Any]]:
         """Get the current conversation history."""

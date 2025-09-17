@@ -75,6 +75,34 @@ print(result.location)  # Access structured data
 print(raw_response)  # Complete raw API response
 ```
 
+### System Instructions
+
+```python
+client = GroqLLMClient()
+
+# Set system instructions to guide AI behavior
+client.set_system_instructions("You are a helpful AI assistant that always responds concisely.")
+
+# The system instructions will be automatically included in all subsequent conversations
+raw_response, response = client.invoke("Explain quantum computing")
+print(response)  # Response will follow the system instructions
+```
+
+### Continuing Conversations
+
+```python
+client = GroqLLMClient()
+client.set_system_instructions("Explain your calculations step by step.")
+
+# First, use a tool
+raw_response1, response1 = client.invoke("Calculate area of circle with radius 5", tools=[calculate_area])
+print(f"Tool result: {client.tool_results}")
+
+# Continue conversation without providing new message - LLM will analyze tool results
+raw_response2, response2 = client.invoke()  # No message parameter!
+print(response2)  # LLM explains the calculation based on tool results and system instructions
+```
+
 ## API Reference
 
 ### GroqLLMClient
@@ -97,13 +125,13 @@ GroqLLMClient(
 
 ```python
 invoke(
-    message: str,
+    message: Optional[str] = None,
     tools: Optional[List[Callable]] = None,
     json_schema: Optional[BaseModel] = None
 ) -> tuple
 ```
 
-- `message`: User message to send to the LLM
+- `message`: Optional user message to send to the LLM. If not provided, continues conversation with existing context
 - `tools`: List of callable functions that can be used as tools
 - `json_schema`: Pydantic BaseModel class for structured output
 
@@ -120,6 +148,7 @@ invoke(
 #### Utility Methods
 
 - `clear_conversation()`: Clear conversation history
+- `set_system_instructions(instructions: str)`: Set system instructions to guide AI behavior
 - `get_conversation_history()`: Get current conversation messages
 
 ## Tool Documentation Format

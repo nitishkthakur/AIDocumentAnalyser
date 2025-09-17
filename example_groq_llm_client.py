@@ -141,9 +141,60 @@ def example_5_conversation_state():
     print()
 
 
-def example_6_complex_workflow():
-    """Example 6: Complex workflow with tools and follow-up."""
-    print("Example 6: Complex Workflow")
+def example_6_continuing_conversation():
+    """Example 6: Continuing conversation without new message."""
+    print("Example 6: Continuing Conversation")
+    print("-" * 40)
+    
+    client = GroqLLMClient()
+    
+    # Set system instructions for context
+    client.set_system_instructions("You are a helpful assistant that explains your calculations step by step.")
+    
+    # First, use a tool
+    raw_response1, response1 = client.invoke(
+        "Calculate the area of a circle with radius 7",
+        tools=[calculate_circle_area]
+    )
+    print(f"Step 1 - Tool response: {response1}")
+    print(f"Tool results: {client.tool_results}")
+    
+    # Now continue the conversation without providing a new message
+    # The LLM will look at the tool results and system instructions to respond
+    print("\nContinuing conversation based on tool results and system instructions...")
+    raw_response2, response2 = client.invoke()  # No message provided!
+    print(f"Step 2 - Continued response: {response2}")
+    
+    print(f"Total conversation messages: {len(client.get_conversation_history())}")
+    print()
+
+
+def example_7_system_instructions():
+    """Example 7: Using system instructions."""
+    print("Example 7: System Instructions")
+    print("-" * 40)
+    
+    client = GroqLLMClient()
+    
+    # Set system instructions
+    client.set_system_instructions("You are a helpful AI assistant that always responds in a very concise manner with exactly one sentence.")
+    print(f"System instructions set: {client.system_instructions}")
+    
+    # Make a request - the system instructions will guide the response
+    raw_response, response = client.invoke("Tell me about artificial intelligence.")
+    print(f"Response with system instructions: {response}")
+    
+    # Check that system message was added to conversation
+    history = client.get_conversation_history()
+    if history and history[0].get("role") == "system":
+        print("✅ System message properly added to conversation")
+    
+    print()
+
+
+def example_8_complex_workflow():
+    """Example 8: Complex workflow with tools and follow-up."""
+    print("Example 8: Complex Workflow")
     print("-" * 40)
     
     client = GroqLLMClient()
@@ -173,7 +224,9 @@ def main():
         example_3_multiple_tools,
         example_4_structured_output,
         example_5_conversation_state,
-        example_6_complex_workflow
+        example_6_continuing_conversation,
+        example_7_system_instructions,
+        example_8_complex_workflow
     ]
     
     for i, example_func in enumerate(examples, 1):

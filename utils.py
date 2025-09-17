@@ -280,6 +280,39 @@ def parse_string_or_dict(input_data):
         after = text[end + len(closing):]
         return enclosed, after
 
+def has_tool_call_groq_response(response: dict) -> bool:
+    """
+    Determine if a Groq LLM response contains a tool call.
+
+    Args:
+        response (dict): The response dictionary from a Groq LLM call.
+
+    Returns:
+        bool: True if a tool call is present, False otherwise.
+
+    Examples:
+        >>> has_tool_call_groq_response({'tool_calls': [{'name': 'search'}]})
+        True
+        >>> has_tool_call_groq_response({'choices': [{'message': {'tool_calls': []}}]})
+        False
+        >>> has_tool_call_groq_response({'choices': [{'message': {}}]})
+        False
+        >>> has_tool_call_groq_response({})
+        False
+    """
+    # Check top-level 'tool_calls'
+    if isinstance(response, dict):
+        if 'tool_calls' in response and response['tool_calls']:
+            return True
+        # Check nested structure (e.g., OpenAI/Groq style)
+        choices = response.get('choices')
+        if isinstance(choices, list):
+            for choice in choices:
+                message = choice.get('message') if isinstance(choice, dict) else None
+                if message and 'tool_calls' in message and message['tool_calls']:
+                    return True
+    return False
+
 
 # Example usage and testing
 if __name__ == "__main__":
